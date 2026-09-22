@@ -313,8 +313,23 @@ class Context:
             print('%s: warning: %s: %s' % (PROG, self.label, msg), file=sys.stderr)
 
 
-def extract_raw(psb, root, raw_dir, stem):
-    """Write raw/ (root binaries + tree JSON). Returns {key: Binary} of root binaries."""
+def decode_image(psb, b):
+    """Decode a TLG binary to (w, h, rgba). Raises PimgError if not possible."""
+    data = psb.binary(b)
+    if data[:11] != TLG5_MAGIC:
+        raise PimgError('not a TLG5 image (%r)' % bytes(data[:6]))
+    try:
+        return decode_tlg5(data)
+    except (IndexError, struct.error) as e:
+        raise PimgError('TLG5 decode failed (%s)' % e)
+
+
+def extract_raw(ctx, psb, root, raw_dir, stem):
+    """Write raw/ (root binaries, PNG of each .tlg, tree JSON).
+
+    Returns ({key: Binary}, {key: (w, h, rgba) | PimgError}) for root binaries;
+    the second dict holds the TLG decode results so composite can reuse them.
+    """
     root_bins = {}
     extra_bins = {}
 
@@ -344,10 +359,29 @@ def extract_raw(psb, root, raw_dir, stem):
     with open(os.path.join(raw_dir, stem + '.json'), 'w', encoding='utf-8') as f:
         json.dump(tree, f, ensure_ascii=False, indent=2)
         f.write('\n')
-    return {k: b for k, (_, b) in root_bins.items()}
+
+    # PNG conversion of each .tlg (the original .tlg is kept as well)
+    written = {fname.lower() for fname, _ in root_bins.values()} | {n.lower() for n in extra_bins}
+    decoded = {}
+    for key, (fname, b) in root_bins.items():
+        if not fname.lower().endswith('.tlg'):
+            continue
+        try:
+            decoded[key] = decode_image(psb, b)
+        except PimgError as e:
+            decoded[key] = e
+            ctx.warn('%s: %s; PNG not written' % (fname, e))
+            continue
+        png = fname[:-4] + '.png'
+        if png.lower() in written:
+            ctx.warn('%s: "%s" already used by another binary; PNG not written' % (fname, png))
+            continue
+        w, h, px = decoded[key]
+        write_png(os.path.join(raw_dir, png), w, h, px)
+    return {k: b for k, (_, b) in root_bins.items()}, decoded
 
 
-def composite(ctx, psb, root, root_bins, comp_dir):
+def composite(ctx, psb, root, root_bins, decoded, comp_dir, stem):
     layers = root.get('layers')
     if not isinstance(layers, list) or not layers:
         ctx.warn('no "layers"; composite skipped')
@@ -361,20 +395,22 @@ def composite(ctx, psb, root, root_bins, comp_dir):
         if l.get('layer_type', 0) != 0:
             ctx.warn('layer %s: layer_type %s (group layer etc.) is not supported'
                      % (lid, l.get('layer_type')))
-        b = root_bins.get('%s.tlg' % lid)
+        key = '%s.tlg' % lid
+        b = root_bins.get(key)
         if b is None:
             if l.get('layer_type', 0) == 0:
-                ctx.warn('layer %s: image "%s.tlg" not found; skipped' % (lid, lid))
+                ctx.warn('layer %s: image "%s" not found; skipped' % (lid, key))
             continue
-        data = psb.binary(b)
-        if data[:11] != TLG5_MAGIC:
-            ctx.warn('layer %s: not a TLG5 image (%r); skipped' % (lid, bytes(data[:6])))
+        img = decoded.get(key)
+        if img is None:
+            try:
+                img = decode_image(psb, b)
+            except PimgError as e:
+                img = e
+        if isinstance(img, PimgError):
+            ctx.warn('layer %s: %s; skipped' % (lid, img))
             continue
-        try:
-            iw, ih, px = decode_tlg5(data)
-        except (PimgError, IndexError, struct.error) as e:
-            ctx.warn('layer %s: TLG5 decode failed (%s); skipped' % (lid, e))
-            continue
+        iw, ih, px = img
         if (iw, ih) != (l.get('width'), l.get('height')):
             ctx.warn('layer %s: image size %dx%d differs from layer %sx%s'
                      % (lid, iw, ih, l.get('width'), l.get('height')))
@@ -429,14 +465,15 @@ def composite(ctx, psb, root, root_bins, comp_dir):
     base_canvas = bytearray(cw * ch * 4)
     draw(base, base_canvas)
     base_name = names[id(base)]
-    write_png(os.path.join(comp_dir, base_name + '.png'), cw, ch, base_canvas)
+    write_png(os.path.join(comp_dir, '%s-%s.png' % (stem, base_name)), cw, ch, base_canvas)
 
     for l in usable:
         if l is base:
             continue
         canvas = bytearray(base_canvas)
         draw(l, canvas)
-        write_png(os.path.join(comp_dir, '%s+%s.png' % (base_name, names[id(l)])), cw, ch, canvas)
+        write_png(os.path.join(comp_dir, '%s-%s+%s.png' % (stem, base_name, names[id(l)])),
+                  cw, ch, canvas)
 
 
 def process(path, out_parent, args):
@@ -462,12 +499,12 @@ def process(path, out_parent, args):
 
     raw_dir = os.path.join(out_dir, 'raw')
     os.makedirs(raw_dir, exist_ok=True)
-    root_bins = extract_raw(psb, root, raw_dir, stem)
+    root_bins, decoded = extract_raw(ctx, psb, root, raw_dir, stem)
 
     if not args.no_composite:
         comp_dir = os.path.join(out_dir, 'composite')
         os.makedirs(comp_dir, exist_ok=True)
-        composite(ctx, psb, root, root_bins, comp_dir)
+        composite(ctx, psb, root, root_bins, decoded, comp_dir, stem)
     return True
 
 
