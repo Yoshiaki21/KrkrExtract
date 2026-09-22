@@ -138,6 +138,7 @@ cargo build --release          # → target/release/pimgext(.exe)
 target/release/pimgext ev101_a.pimg
 ```
 
+- 動作確認済み: Linux（Manjaro、rustc 1.98）と Windows で、ビルドでき動作することを確認済み。
 - 依存: `libz-sys`（本物の zlib）。PNG の圧縮データを Python の `zlib.compress(…, 6)` と同じバイト列にするため、miniz 等は使わない。Linux ではシステムの libz を使い、見つからない環境（Windows 等）では同梱の zlib をビルドする（C コンパイラが必要）。
 - 異常な入力でも Python 版と同じ結果になるよう、Python の挙動を再現している（範囲外スライスが空になる、`bool` を int として扱う、`0.0 == 0`、`float` の repr、argparse の省略形オプション・`-fq` のようなまとめ書き・エラー文言など）。
 
