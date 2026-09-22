@@ -62,6 +62,7 @@
   - capstone（逆アセンブル）、jsoncpp、zlib、libpng、lz4、xxhash、md5/sha1、magic_enum、argparse（いずれもソリューション内 or Core 内に同梱）
   - NativeLib（phnt ベースの NT API ラッパ、`Ps::` `Nt::` 等の名前空間。静的ライブラリ）
   - Lite（C#）: Costura.Fody（単一exe化）、Newtonsoft.Json 13.0.1
+  - pimgext Rust 版: Rust 2021 + `libz-sys`（PNG を Python の zlib.compress と同一バイトにするため本物の zlib を使用）
   - `krkrz/` は吉里吉里Z 本体ソース（`tvpwin32` 等。デバッグ/ASan 用ターゲット）
 
 ### 3. ディレクトリ構造 / Critical Paths（最重要）
@@ -74,7 +75,8 @@
 | xp3 の解析 | `KrkrExtract.Core/XP3Parser.{h,cpp}`、`Xp3*NodeValidator*.cpp`（チャンク形式ごとの検証器） |
 | 形式別の展開処理を追加/修正 | `KrkrExtract.Core/*Unpacker.cpp`（Psb/Tlg/Png/Pbd/Amv/Text/File）＋ `*Decoder.cpp` / `*Decode.cpp` |
 | PSB / PIMG（PSB形式のレイヤー画像コンテナ）の展開 | `KrkrExtract.Core/PsbWorker.cpp`（`DumpPsbTjs2` が入口、`dumpPimg` が画像書き出し、`dump()` がツリーのTJS出力）、JSON化は `PsbDecompilerJson.cpp`。スタンドアロン版は `ToolSource/EMoteDumper/` |
-| PIMG 単体の解凍＋差分合成ツール（Python・標準ライブラリのみ） | `ToolSource/pimgext/`（仕様は `SPEC.md`） |
+| PIMG 単体の解凍＋差分合成ツール（Python・標準ライブラリのみ） | `ToolSource/pimgext/pimgext.py`（仕様は `SPEC.md`） |
+| 同ツールの Rust 版（Python 版と出力バイト一致・挙動同一） | `ToolSource/pimgext/rust/`（`src/main.rs` が処理本体、`psb.rs`/`tlg5.rs`/`args.rs`=argparse 再現）。Python 版を変えたら Rust 版も合わせ、`SPEC.md` §9 を更新 |
 | 再パック（krkr2 向け） | `KrkrExtract.Core/KrkrPacker.cpp` |
 | Universal Dumper（krkrz 限定） | `KrkrExtract.Core/TaskUniversalDumper.cpp`、`KrkrDumper.cpp` |
 | Universal Patch 生成 / パッチDLL本体 | 生成: `KrkrExtract.Core/KrkrUniversalPatch.cpp` / DLL: `KrkrExtract/KrkrzUniversalPatch/`（出力名 `KrkrUniversalPatch.dll`） |
@@ -116,6 +118,9 @@ python3 KrkrExtract/cleanup.py
 
 # PIMG の解凍＋差分合成（Linux でも動く。sample.pimg の横に sample/raw, sample/composite を作る）
 python3 ToolSource/pimgext/pimgext.py sample.pimg
+# 同 Rust 版（ビルドして実行。出力は Python 版と同一）
+cargo build --release --manifest-path ToolSource/pimgext/rust/Cargo.toml
+ToolSource/pimgext/rust/target/release/pimgext sample.pimg
 ```
 - ASan 付きデバッグビルド手順は README（`img/step*.png`）参照。ASan 対応の吉里吉里本体が必要
 

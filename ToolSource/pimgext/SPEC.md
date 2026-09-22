@@ -5,7 +5,8 @@
 
 ## 1. 動作環境
 
-- Python 3.8 以上（標準ライブラリのみ。numpy / Pillow 等は使わない）
+- Python 版 `pimgext.py`: Python 3.8 以上（標準ライブラリのみ。numpy / Pillow 等は使わない）
+- Rust 版 `rust/`: Python 版と同じ動作をする移植版（§9）
 - Linux / Windows / macOS
 
 ## 2. コマンドライン
@@ -38,16 +39,20 @@ pimgext [オプション] 入力...
 sample/
   ├─ raw/
   │   ├─ 2.tlg, 3.tlg, ...    PIMG 内のバイナリをそのまま書き出したもの
+  │   ├─ 2.png, 3.png, ...    各 .tlg を PNG に変換したもの
   │   └─ sample.json          PSB ツリー全体
   └─ composite/
-      ├─ Aa.png               ベース単体
-      ├─ Aa+Ab.png            ベース＋差分
+      ├─ sample-Aa.png        ベース単体
+      ├─ sample-Aa+Ab.png     ベース＋差分
       └─ ...
 ```
 
 ### 3.1 raw/
 
 - ルート辞書のうち値がバイナリのものを、**キー名をファイル名として**そのまま書き出す（例: `2.tlg`）。
+- ファイル名が `.tlg`（大文字小文字は区別しない）で終わるものは、デコードして同名の PNG（8bit RGBA、例: `2.png`）も書き出す。元の `.tlg` も残す。
+  - デコードできない場合（TLG6 など）は PNG を書かずに警告する（`<ファイル名>: <理由>; PNG not written`）。
+  - PNG 名が他のバイナリのファイル名と重なる場合（大文字小文字は区別しない）は PNG を書かずに警告する。
 - `sample.json` は PSB ツリー全体を JSON 化したもの（UTF-8, インデント 2）。
   - バイナリ値は、書き出したファイル名の文字列に置き換える（ルート直下以外のバイナリは `"<binary:番号>"` とし、`raw/_bin<番号>.bin` として書き出す）。
   - 数値・文字列・真偽値・null・配列・辞書はそのまま出力する。キーの順序は PSB 内の順序を保つ。
@@ -56,7 +61,8 @@ sample/
 ### 3.2 composite/
 
 - PNG（8bit RGBA）。サイズはルートの `width` × `height`。
-- ファイル名は `layers[].name` を使う。ファイル名に使えない文字は `_` に置き換える。名前が重複する場合は `<name>_<layer_id>`、空の場合は `layer_<layer_id>` とする。
+- ファイル名は `<入力ファイル名から拡張子を除いたもの>-<ベース名>.png`（ベース単体）と `<入力ファイル名から拡張子を除いたもの>-<ベース名>+<差分名>.png`（ベース＋差分）。例: `ev101_a.pimg` → `ev101_a-Aa.png`、`ev101_a-Aa+Ab.png`
+- ベース名・差分名は `layers[].name` を使う。ファイル名に使えない文字は `_` に置き換える。名前が重複する場合は `<name>_<layer_id>`、空の場合は `layer_<layer_id>` とする。
 - ベースがキャンバスより小さい場合、覆われない部分は透明になる。
 
 ## 4. 入力形式
@@ -119,4 +125,28 @@ PSB の読み方は `KrkrExtract/KrkrExtract.Core/PsbWorker.cpp`（`PsbArray` / 
 python3 ToolSource/pimgext/pimgext.py ev101_a.pimg
 ```
 
-- リポジトリ直下の `ev101_a.pimg` で、raw/ に 8 個の TLG と JSON、composite/ に 8 枚の PNG（`Aa.png` と `Aa+Ab.png` 〜 `Aa+Ah.png`）が出力され、警告が出ないこと。
+- リポジトリ直下の `ev101_a.pimg` で、raw/ に 8 個の TLG・それを変換した 8 枚の PNG・JSON、composite/ に 8 枚の PNG（`ev101_a-Aa.png` と `ev101_a-Aa+Ab.png` 〜 `ev101_a-Aa+Ah.png`）が出力され、警告が出ないこと。
+- Rust 版で同じ入力を処理した出力フォルダが、Python 版の出力とバイト単位で一致すること（`diff -r`）。
+
+## 9. Rust 版（`rust/`）
+
+`pimgext.py` と同じ動作をする移植版。コマンドライン・出力ファイル（バイト単位）・警告/エラー文言・終了コードは Python 版と同じ。
+
+```bash
+cd ToolSource/pimgext/rust
+cargo build --release          # → target/release/pimgext(.exe)
+target/release/pimgext ev101_a.pimg
+```
+
+- 依存: `libz-sys`（本物の zlib）。PNG の圧縮データを Python の `zlib.compress(…, 6)` と同じバイト列にするため、miniz 等は使わない。Linux ではシステムの libz を使い、見つからない環境（Windows 等）では同梱の zlib をビルドする（C コンパイラが必要）。
+- 異常な入力でも Python 版と同じ結果になるよう、Python の挙動を再現している（範囲外スライスが空になる、`bool` を int として扱う、`0.0 == 0`、`float` の repr、argparse の省略形オプション・`-fq` のようなまとめ書き・エラー文言など）。
+
+### 9.1 Python 版との違い
+
+| 状況 | Python 版 | Rust 版 |
+|---|---|---|
+| Python 版がトレースバックで落ちる入力（`left` に文字列、深すぎる入れ子による RecursionError、メモリ不足、読めないディレクトリ等） | トレースバックを表示して終了コード 1。以降の入力は処理しない | `pimgext: fatal: <ファイル名>: <例外名>: <内容>` を表示して終了コード 1。以降の入力は処理しない（それまでに書いたファイルは同じ） |
+| 入れ子の深さが Python の再帰上限（約 990 段）付近の PSB | CPython の最適化の状態によって失敗する段数が 1〜2 段ずれることがある | CPython 3.14 での実測値に合わせた段数で失敗する |
+| ヘルプ表示 | 端末幅による折り返し・色付け（3.14） | 80 桁・色なしの固定表示 |
+| Linux で UTF-8 でないファイル名 | 扱える | 扱えない（置換文字になり開けない） |
+| 名前が `Binary` オブジェクトのレイヤー（実データでは起こらない） | メモリアドレス入りの名前 | 固定の疑似アドレス入りの名前 |

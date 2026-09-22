@@ -1,0 +1,15 @@
+[package]
+name = "pimgext"
+version = "1.0.0"
+edition = "2021"
+description = "Extract and composite .pimg files (Rust port of pimgext.py)"
+license = "GPL-3.0"
+
+[dependencies]
+# Real zlib (not miniz) so that PNG/IDAT bytes match Python's zlib.compress
+libz-sys = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
